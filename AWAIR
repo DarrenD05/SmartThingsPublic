@@ -289,60 +289,29 @@ private testAuthToken() {
 }
 
 ///////////////////////////////////////////////////////////////DEVICE DISCOVER INFORMATION////////////////////////////////////////////////////////////////////////////////
-
-
-def selectDevicesPage(){
-	log.debug "Entering the selectDevicesPage method"
-    def devs = [:]
-    devs += getDevices()
-     atomicState.devices = devs
-        log.debug "available devices list: ${devs}"
-        return dynamicPage(name: "selectDevices", title: "Select Your Devices", nextPage: "settings", uninstall:false, install:false) {
-            section("") {
-                paragraph "Tap below to see the list of devices available in your AWAIR account and select the ones you want to connect to SmartThings."
-                input(name: "devices", title:"Select Your Device(s)", type: "enum", required:false, multiple:true, description: "Tap to choose", metadata:[values:devs])
-            }
-        }
+def selectDevicesPage(evt) {
+    	def pollParams = [
+        uri: "https://developer-apis.awair.is",
+        path: "/v1/users/self/devices",
+        requestContentType: "application/json",
+      	headers: ['Authorization': "Bearer ${atomicState.authToken}", 'Accept':'application/json'],
+		]
+      
+          
+   try {
+    httpGet(pollParams) { resp ->
+        resp.headers.each {
+        log.debug "${it.name} : ${it.value}"
+    }
+    log.debug "response contentType: ${resp.contentType}"
+    log.debug "response data: ${resp.data}"
+    }
+} catch (e) {
+    log.error "something went wrong: $e"
+}
 }
 
-private getDevices() {
-		log.debug "Enter getDevices"
-	        def Params = [
-        	uri: "https://developer-apis.awair.is",
-            path: "/v1/users/self/devices",
-        	headers: ['Authorization': "Bearer ${atomicState.authToken}",'Content-Type':'application/json', 'Accept':'application/json'],
-            query: [
-                apikey: APIKey(),
-                
-            ],
-        ]
-        
-        def devs = [:]
-          try {
-            httpGet(Params) { resp ->
-            	log.debug "getDevices httpGet response = ${resp.data}"
-                if(resp.status == 200)
-                {	
-                    resp.data.each { dev ->
-                    try{
-                        def dni = [app.id, dev.device_Id]
-                        log.debug "Found device ID: ${dni} Name: ${dev.name}"
-                        devs[dni] = dev.name
-                        deviceId[dni] = dev.device_Id
-                        }
-                     catch (e) {
-                        log.error "Error in getDevices: $e"
-                     }
-				}
-                } 
-            }
-            atomicState.device_Id = device_Id
-          }
-        catch (e) {
-            log.error "Error in getDevices: $e"
-        }
-        return devs
-}
+
 
 
 
