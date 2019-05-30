@@ -13,6 +13,7 @@
  *  for the specific language governing permissions and limitations under the License.
  *
  */
+ 
 definition(
     name: "AWAIR V2 (Connect)",
     namespace: "DarrenD05",
@@ -142,12 +143,15 @@ def authPage() {
             }
         }
     } else {
-        def devices = selectDevicesPage()
-        log.info "available device list: $devicelist"
+        def devices = makeJSONRequest()
+        def devs = [:]
+        devs += makeJSONRequest()
+		atomicState.devices = devs
+        log.debug "available devices list: ${devs}"
         return dynamicPage(name: "auth", title: "Select Your Device", nextPage: "", uninstall:uninstallAllowed) {
             section("") {
                 paragraph "Tap below to see the list of devices available in your AWAIR account and select the ones you want to connect to SmartThings."
-                input(name: "Devices", title:"Select Your Device(s)", type: "enum", required:true, multiple:true, description: "Tap to choose", metadata:[values:name])
+                input(name: "Devices", title:"Select Your Device(s)", type: "enum", required:true, multiple:true, description: "Tap to choose", metadata:[values:devs])
             }
         }
     }
@@ -289,43 +293,45 @@ private testAuthToken() {
 }
 
 ///////////////////////////////////////////////////////////////DEVICE DISCOVER INFORMATION////////////////////////////////////////////////////////////////////////////////
-def selectDevicesPage(evt) {
-    	def pollParams = [
+def makeJSONRequest() {
+    def params = [
         uri: "https://developer-apis.awair.is",
         path: "/v1/users/self/devices",
-        requestContentType: "application/json",
+        ContentType: "application/json",
       	headers: ['Authorization': "Bearer ${atomicState.authToken}", 'Accept':'application/json'],
-		]
-      
-          
-   try {
-    httpGet(pollParams) { resp ->
-        resp.headers.each {
-        log.debug "${it.name} : ${it.value}"
-    }
-    log.debug "response contentType: ${resp.contentType}"
-    log.debug "response data: ${resp.data}"
-    }
-} catch (e) {
-    log.error "something went wrong: $e"
+    ]
+    
+    	  def devs = [:]
+        def deviceids = [:]
+        try {
+            httpGet(params) { resp ->
+            	log.debug "Response Data: ${resp.data}"
+            log.debug "Response Data: ${resp.data}"
+            log.debug "Response IDs: ${resp.data.devices.deviceId}"
+            log.debug "Response Names: ${resp.data.devices.name}"
+            log.debug "Response Device Type: ${resp.data.devices.deviceType}"
+                if(resp.status == 200)
+                {	
+                    resp.data.devices.each { dev ->
+                    try{
+                        def dni = [app.id, dev.deviceId].join('.')
+                        log.debug "Found device ID: ${dni} Name: ${dev.name}"
+                        devs[dni] = dev.name
+                        deviceids[dni] = dev.deviceId
+                        }
+                     catch (e) {
+                        log.error "Error in getDevices: $e"
+                     }
+				}
+                } 
+            }
+            atomicState.deviceids = deviceids
+          }
+        catch (e) {
+            log.error "Error in getDevices: $e"
+        }
+        return devs
 }
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 ///////////////////////////////////////SMARTAPP INFORMATION///////////////////////////////////////////////////////
