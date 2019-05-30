@@ -290,6 +290,7 @@ private testAuthToken() {
 
 ///////////////////////////////////////////////////////////////DEVICE DISCOVER INFORMATION////////////////////////////////////////////////////////////////////////////////
 
+
 def selectDevicesPage(){
 	log.debug "Entering the selectDevicesPage method"
     def devs = [:]
@@ -306,8 +307,7 @@ def selectDevicesPage(){
 
 private getDevices() {
 		log.debug "Enter getDevices"
-		refreshAuthToken()
-        def Params = [
+	        def Params = [
         	uri: "https://developer-apis.awair.is",
             path: "/v1/users/self/devices",
         	headers: ['Authorization': "Bearer ${atomicState.authToken}",'Content-Type':'application/json', 'Accept':'application/json'],
@@ -318,18 +318,17 @@ private getDevices() {
         ]
         
         def devs = [:]
-        def deviceId = [:]
-        try {
+          try {
             httpGet(Params) { resp ->
             	log.debug "getDevices httpGet response = ${resp.data}"
                 if(resp.status == 200)
                 {	
                     resp.data.each { dev ->
                     try{
-                        def dni = [app.id, dev.deviceId].join('.')
+                        def dni = [app.id, dev.device_Id]
                         log.debug "Found device ID: ${dni} Name: ${dev.name}"
                         devs[dni] = dev.name
-                        deviceId[dni] = dev.deviceId
+                        deviceId[dni] = dev.device_Id
                         }
                      catch (e) {
                         log.error "Error in getDevices: $e"
@@ -337,7 +336,7 @@ private getDevices() {
 				}
                 } 
             }
-            atomicState.deviceId = deviceId
+            atomicState.device_Id = device_Id
           }
         catch (e) {
             log.error "Error in getDevices: $e"
