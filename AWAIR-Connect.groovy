@@ -13,6 +13,7 @@
  *  for the specific language governing permissions and limitations under the License.
  *
  */
+ import groovy.json.JsonSlurper
  
 definition(
     name: "AWAIR V2 (Connect)",
@@ -64,30 +65,26 @@ def uninstalled() {
 
 def initialize() {
 	log.debug "Entering the initialize method"
-
+	def devs = settings.devices.collect { dni ->
+    	//log.debug "processing ${dni}"
 		def d = getChildDevice(dni)
 		if(!d) {
         	def devlist = atomicState.devices
-			d = addChildDevice(app.namespace, getChildName(), dni, null, ["label":"${devlist[dni]} Lyric" ?: "AWAIR Air Quality Monitor"])
+			d = addChildDevice(app.namespace, getChildName(), dni, null, ["label":"${devlist[dni]}" ?: "AWAIR Air Quality Monitor"])
 			log.info "created ${d.displayName} with id $dni"
 		} else {
 			log.info "found ${d.displayName} with id $dni already exists"
 		}
 		return d
-	
+	}
     
 	//log.debug "created ${devs.size()} devices."
 
 	def delete  // Delete any that are no longer in settings
 	if(!devs) {
-		//log.debug "delete all leak sensors"
+		log.debug "delete all devices"
 		delete = getAllChildDevices() //inherits from SmartApp (data-management)
-	} else {
-		//log.debug "delete individual thermostat and sensor"
-		delete = getChildDevices().findAll { !settings.devices.contains(it.deviceNetworkId)}
-	}
-	log.warn "delete: ${delete}, deleting ${delete.size()} leak sensors"
-	delete.each { deleteChildDevice(it.deviceNetworkId) } //inherits from SmartApp (data-management)
+	} 
 	
     try{
     	pollChildren()
@@ -97,10 +94,8 @@ def initialize() {
     	log.debug "Error with initial polling: $e"
     }
     
-	runEveryMinute("pollChildren")
-
+	runEvery1Minute("pollChildren")
 }
-
 
 
 /////////////////////API AUTH INFORMATION///////////////////////////////
@@ -137,27 +132,18 @@ def authPage() {
             }
         }
     } else {
-        def devices = selectDevicesPage()
-        def devs = [:]
-        devs += selectDevicesPage()
-		atomicState.devices = devs
-        log.debug "available devices list: ${devs}"
-        return dynamicPage(name: "auth", title: "Select Your Device", nextPage: "settings", uninstall:uninstallAllowed) {
+        def locations = getLocations()
+        log.info "available location list: $locations"
+        return dynamicPage(name: "auth", title: "Select Your Location", nextPage: "selectDevices", uninstall:uninstallAllowed) {
             section("") {
-                paragraph "Tap below to see the list of devices available in your AWAIR account and select the ones you want to connect to SmartThings."
-                input(name: "Devices", title:"Select Your Device(s)", type: "enum", required:true, multiple:true, description: "Tap to choose", metadata:[values:devs])
+                paragraph "Tap below to see the list of locations available in your AWAIR account and select the ones you want to connect to SmartThings."
+                input(name: "Locations", title:"Select Your Location(s)", type: "enum", required:true, multiple:true, description: "Tap to choose", metadata:[values:locations])
             }
         }
     }
 }
 
-private settingsPage(){
-    return dynamicPage(name: "settings", title: "Settings", nextPage: "", uninstall:false, install:true) {
-                section("") {
-                    input "DisplayTempInF", "boolean", title: "Display temperatures in Fahrenheit?", defaultValue: true, required: false
-                }
-            }
-}
+
 def oauthInitUrl() {
 
     // Generate a random ID to use as a our state value. This value will be used to verify the response we get back from the third-party service.
@@ -203,7 +189,6 @@ def callback() {
         try {
             httpPost(Params) { resp ->
                 log.debug "refresh auth token response data: ${resp.data}"
-                atomicState.tokenExpiresIn = resp.data.expires_in
                 atomicState.refreshToken = resp.data.refresh_token
                 atomicState.authToken = resp.data.access_token
             }
@@ -231,37 +216,72 @@ private String getBase64AuthString() {
     return authorize_encoded
 }
 
-private refreshAuthToken() {
-		if (testAuthToken() == false) {
-            log.info "Refreshing your auth_token!"
-            def Params = [
-                uri: "https://oauth2.awair.is",
+boolean refreshAuthToken() {
+	log.debug "refreshing auth token"
+	def notificationMessage = "is disconnected from SmartThings, because the access credential changed or was lost. Please go to the AWAIR (Connect) SmartApp and re-enter your account login credentials."
+	def isSuccess = false
+
+	if(!atomicState.refreshToken) {
+		log.warn "Can not refresh OAuth token since there is no refreshToken stored"
+		sendPushAndFeeds(notificationMessage)
+	} else {
+		def refreshParams = [
+			method: 'POST',
+			uri: "https://oauth2.awair.is",
             path: "/v2/token",
-                headers: ['Authorization': "Bearer ${getBase64AuthString()}"],
-                body: [
-                    grant_type: 'refresh_token',
-                    refresh_token: atomicState.refreshToken
-                ],
-            ]
-
-            try {
-                httpPost(Params) { resp ->
-                    log.debug resp.data
-                    if(resp.status == 200)
-                    {
-                        if (resp.data) {
-                            atomicState.refreshToken = resp?.data?.refresh_token
-                            atomicState.authToken = resp?.data?.access_token
-                            atomicState.tokenExpiresIn = resp?.data?.expires_in
-                            log.info "Token refresh Success."
-                        }
-                    }}
-            }
-            catch (e) {
-                log.error "Error in the refreshAuthToken method: $e"
-            }
-
-    }
+        	headers: ['Authorization': "Bearer ${getBase64AuthString()}"],
+            body: [
+            grant_type: "authorization_code",
+            code      : code,
+            client_id : APIKey(),
+            client_secret: APISecret(),
+		]]
+		if (state.jwt) {
+			refreshParams.query = [
+				grant_type:    "refresh_token",
+				refresh_token: atomicState.refreshToken,
+				client_id :    APIKey(),
+				AWAIR_Type:   "jwt"
+			]
+		} else {
+			refreshParams.query = [
+				grant_type: "refresh_token",
+				code:       atomicState.refreshToken,
+				client_id:  APIKey()
+			]
+		}
+		try {
+			httpPost(refreshParams) { resp ->
+				if(resp.status == 200) {
+					log.debug "Token refreshed, ${resp.data}"
+					state.refreshToken = resp.data?.refresh_token
+					state.authToken = resp.data?.access_token
+					state.reAttempt = 0
+					isSuccess = true
+				}
+			}
+		} catch (groovyx.net.http.HttpResponseException e) {
+			def rspDataString = "${e.response?.data}".toString()
+			log.error "Error refreshing auth_token:${e.statusCode}, refreshAttempt:${state.reAttempt}, response data:$rspDataString"
+			if ((e.statusCode == 400) || (e.statusCode == 302)) {
+				def slurper = new JsonSlurper()
+				def rspData = slurper.parseText(rspDataString)
+				if (rspData && (rspData.error != "invalid_request" || rspData.error != "not_supported")) {
+					// either "invalid_grant", "unauthorized_client", "unsupported_grant_type",
+					// or "invalid_scope", request user to re-enter credentials
+					sendPushAndFeeds(notificationMessage)
+				}
+			} else if (e.statusCode == 401) { // unauthorized*/
+				state.reAttempt = state.reAttempt ? state.reAttempt + 1 : 1
+				log.warn "reAttempt refreshAuthToken ${state.reAttempt}"
+				if (state.reAttempt > 3) {
+					sendPushAndFeeds(notificationMessage)
+					state.reAttempt = 0
+				}
+			}
+		}
+	}
+	return isSuccess
 }
 
 private testAuthToken() {
@@ -269,9 +289,7 @@ private testAuthToken() {
         	uri: "https://oauth2.awair.is",
             path: "/v2/token",
         	headers: ['Authorization': "Bearer ${atomicState.authToken}"],
-            query: [
-                apikey: APIKey()
-            ],
+            
         ]
         
         try {
@@ -294,23 +312,90 @@ private testAuthToken() {
 }
 
 ///////////////////////////////////////////////////////////////DEVICE DISCOVER INFORMATION////////////////////////////////////////////////////////////////////////////////
-def selectDevicesPage() {
-    def params = [
+
+
+private getLocations() {
+		log.debug "Entering the getLocations method"
+       def Params = [
+       uri: "https://developer-apis.awair.is",
+        path: "/v1/users/self/devices",
+        ContentType: "application/json",
+      	headers: ['Authorization': "Bearer ${atomicState.authToken}", 'Accept':'application/json'],
+    ]
+        
+        def locs = [:]
+        try {
+            httpGet(Params) { resp ->
+            	//log.debug "getLocations httpGet response = ${resp.data}"
+                if(resp.status == 200)
+                {	
+                    atomicState.locations = []
+                    resp.data.devices.each { loc ->
+                    try{
+                        //def dni = [app.id, loc.locationName].join('.')
+                        //log.debug "Found Location ID: ${loc.locationName} Name: ${loc.name}"
+                        locs[loc.locationName] = loc.spaceType
+                        atomicState.locations = atomicState.locations == null ? loc : atomicState.locations <<  locs
+                        log.debug "atomicState.Locations = ${atomicState.locations}"
+                        }
+                     catch (e) {
+                        log.error "Error in getLocations resp: $e"
+                     }
+				}
+                } 
+            }
+          }
+        catch (e) {
+            log.error "Error in getLocations: $e"
+        }
+        return locs
+}
+
+def selectDevicesPage(){
+	log.debug "Entering the selectDevicesPage method"
+    def devs = [:]
+    def devicelocations = [:]
+    settings.Locations.each { loc ->
+     log.debug "Getting devices for ${loc}"
+     devs += getDevices(loc)
+     atomicState.devices = devs
+     devs.each { dev -> 
+     	devicelocations[dev.key] = loc
+        atomicState.devicelocations = devicelocations
+     }
+     log.debug "devicelocations = ${devicelocations}"
+    }
+        log.debug "available devices list: ${devs}"
+        return dynamicPage(name: "selectDevices", title: "Select Your Devices", nextPage: "settings", uninstall:false, install:false) {
+            section("") {
+                paragraph "Tap below to see the list of devices available in your AWAIR account and select the ones you want to connect to SmartThings."
+                input(name: "devices", title:"Select Your Device(s)", type: "enum", required:false, multiple:true, description: "Tap to choose", metadata:[values:devs])
+            }
+        }
+}
+
+private settingsPage(){
+    return dynamicPage(name: "settings", title: "Settings", nextPage: "", uninstall:false, install:true) {
+                section("") {
+                    input "DisplayTempInF", "boolean", title: "Display temperatures in Fahrenheit?", defaultValue: true, required: false
+                }
+            }
+}
+
+private getDevices(locID) {
+		log.debug "Enter getDevices"
+		def Params = [
         uri: "https://developer-apis.awair.is",
         path: "/v1/users/self/devices",
         ContentType: "application/json",
       	headers: ['Authorization': "Bearer ${atomicState.authToken}", 'Accept':'application/json'],
     ]
-    
-    	  def devs = [:]
+        
+        def devs = [:]
         def deviceids = [:]
         try {
-            httpGet(params) { resp ->
-            log.debug "Response Data: ${resp.data}"
-            log.debug "Response IDs: ${resp.data.devices.deviceId}"
-            log.debug "Response Names: ${resp.data.devices.name}"
-            log.debug "Response Device Type: ${resp.data.devices.deviceType}"
-            
+            httpGet(Params) { resp ->
+            	log.debug "getDevices httpGet response = ${resp.data}"
                 if(resp.status == 200)
                 {	
                     resp.data.devices.each { dev ->
@@ -327,14 +412,12 @@ def selectDevicesPage() {
                 } 
             }
             atomicState.deviceids = deviceids
-            atomicState.devices = devs
           }
         catch (e) {
             log.error "Error in getDevices: $e"
         }
         return devs
 }
-
 
 ///////////////////////////////////////SMARTAPP INFORMATION///////////////////////////////////////////////////////
 
@@ -382,16 +465,13 @@ def pollChildren(){
         def deviceids = atomicState.deviceids
 		settings.devices.each {dev ->
             def deviceid = deviceids[dev]
-            def locationid = devicelocations[dev]
+            def locationName = devicelocations[dev]
             def d = getChildDevice(dev)
             def Params = [
                 uri: "http://developer-apis.awair.is",
                 path: "v1/users/self/devices/${deviceType}/${deviceId}/air-data/5-min-avg",
                 headers: ['Authorization': "Bearer ${atomicState.authToken}"],
-                query: [
-                    apikey: APIKey(),
-                    
-                ],
+               
             ]
             
             log.debug "starting httpGet with Params = ${Params}"
